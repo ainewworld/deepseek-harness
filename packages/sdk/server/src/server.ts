@@ -220,15 +220,49 @@ export class HarnessSdkJsonRpcServer {
     // rows in the host plane, so this agent reads them from the global layer. A
     // deployment that configures a roster has to join one here first
     // (@deepseek-ai/dsh-agent-presets README, "Composing a child agent").
+    const agentOptions = {
+      provider: this.provider,
+      model: this.model,
+      ...this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens },
+    }
+    // The session id is the durable identity across host restarts: when a
+    // persisted log exists under it, RESUME the agent on that log (history
+    // continuity) instead of creating a fresh live session that would collide
+    // with the stored artifact at the first write-behind flush. Only a session
+    // with no artifact on disk takes the create path.
+    const persistence = this.ctx.get('sessionPersistence') as
+      | { load(id: string): Promise<unknown> }
+      | undefined
+    if (persistence !== undefined && await this.hasPersistedLog(persistence, sessionId)) {
+      const handle = await this.ctx.agents.resume({
+        resumeSessionId: SessionId(sessionId),
+        agentOptions,
+      })
+      return this.registerSession(sessionId, handle)
+    }
     const handle = await this.ctx.agents.create({
       sessionId: SessionId(sessionId),
       meta: { cwd: this.cwd },
-      agentOptions: {
-        provider: this.provider,
-        model: this.model,
-        ...this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens },
-      },
+      agentOptions,
     })
+    return this.registerSession(sessionId, handle)
+  }
+
+  /** True when the persistence service has a stored log for this id. */
+  private async hasPersistedLog(
+    persistence: { load(id: string): Promise<unknown> },
+    sessionId: string,
+  ): Promise<boolean> {
+    try {
+      await persistence.load(sessionId)
+      return true
+    } catch {
+      // "session not found" — no artifact; a fresh create is safe.
+      return false
+    }
+  }
+
+  private registerSession(sessionId: string, handle: AgentHandle): SessionRecord {
     const rec: SessionRecord = { handle }
     this.sessions.set(sessionId, rec)
     return rec
