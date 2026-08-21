@@ -2962,6 +2962,16 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         models: fixtureModelGroups().flatMap(group => group.models.map(model => ({ id: model.id, name: model.name }))),
       }),
     },
+    // No local engine in fixture mode: every voice-input attempt answers the
+    // absent-install error the host would send, so surfaces exercise the
+    // failure path without shipping a model.
+    asr: {
+      transcribe: request => err<{ mediaType: 'audio/wav'; data: string }, { text: string }>(request, {
+        code: 'internal',
+        message: 'fixture mode has no local speech recognition engine',
+        details: {},
+      }),
+    },
     respond(message: ClientResponse): Promise<RpcReceipt> {
       // Same routing discipline as the host: rpcId first, then the payload's
       // audit correlation; a settled or unknown id is not-pending.
@@ -3129,6 +3139,7 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'llm.providers': return this.api.llm.providers(request)
       case 'llm.models': return this.api.llm.models(request)
       case 'llm.discoverModels': return this.api.llm.discoverModels(request, signal)
+      case 'asr.transcribe': return this.api.asr.transcribe(request, signal)
     }
   }
 

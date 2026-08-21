@@ -1,5 +1,6 @@
 /** Registers the conversation components, shared store, and service callbacks. */
 import type { Context } from '@deepseek-ai/cordis'
+import type { ConnectionHandle } from '@deepseek-ai/dsh-api-remotes/client'
 import { resolveSlotLabel, type BoundActions } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   resolveWorkspacePath, type ISessions, type SessionId,
@@ -297,6 +298,7 @@ export function apply(ctx: Context): void {
           toggleCommandMenu: undefined,
           stop: undefined,
           command: undefined,
+          transcribe: undefined,
           hooks: { notices: ABSENT_NOTICES, lexicon: ABSENT_LEXICON, menuLauncher: ABSENT_MENU_LAUNCHER },
         }
       }
@@ -350,6 +352,24 @@ export function apply(ctx: Context): void {
           if (session === undefined) return false
           const result = await session.command(line)
           return result.ok && result.value.matched
+        },
+        // Voice input: the connection's asr domain, adapter-shaped so the
+        // composer contract stays free of wire types. Result mapping is total
+        // — the mic's error path is a resolved value, never a rejection.
+        transcribe: (payload, signal) => {
+          const api = (ctx.get('connection') as ConnectionHandle | undefined)?.api
+          if (api === undefined) {
+            return Promise.resolve({ ok: false as const, message: 'connection service is unavailable' })
+          }
+          return api.asr.transcribe(payload, signal).then(
+            response => response.result.ok
+              ? { ok: true as const, text: response.result.value.text }
+              : { ok: false as const, message: response.result.error.message },
+            (error: unknown) => ({
+              ok: false as const,
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          )
         },
         hooks: {
           notices: shell.notices,

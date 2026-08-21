@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
@@ -109,6 +109,9 @@ import {
   inspectApiRemoteSession,
 } from '@deepseek-ai/dsh-api-remotes'
 import { canOpenNativePath, openNativePath, openNativeTextFile } from './native-path-opener.ts'
+import { ASR_MAX_AUDIO_BYTES } from './api/asr.schema.ts'
+import { resolveWhisperPaths, transcribeWav, whisperTempWavPath } from './asr/whisper.ts'
+import { toSimplified } from './asr/t2s.ts'
 
 /** Page size when history is called without maxMessages. */
 const DEFAULT_MAX_MESSAGES = 50
@@ -3422,6 +3425,47 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             message: error instanceof Error ? error.message : String(error),
             details: { settingsNs, ...baseURL === undefined ? {} : { baseURL } },
           })
+        }
+      },
+    },
+
+    asr: {
+      async transcribe(request, signal) {
+        const unavailable = (message: string) => err<{ text: string }>(request, {
+          code: 'internal',
+          message,
+          details: {},
+        })
+        // Engine absence is a deployment fact, not a crash: the composer hides
+        // the mic affordance only when the whole domain is absent, so a missing
+        // install must surface as a readable message instead.
+        const paths = resolveWhisperPaths()
+        if (!paths.present) {
+          return unavailable(
+            'local speech recognition is not installed: expected whisper-cli and model under "asr" beside the harness home (or $DSH_ASR_WHISPER_BIN / $DSH_ASR_WHISPER_MODEL)',
+          )
+        }
+        const { data } = request.payload
+        // Canonical-base64 check mirrors the image path (decodeBase64 above)
+        // with an asr-scoped message; oversize is a caller error, not internal.
+        const audio = Buffer.from(data, 'base64')
+        if (data.length === 0 || audio.toString('base64') !== data) {
+          return unavailable('audio upload is not canonical base64')
+        }
+        if (audio.byteLength > ASR_MAX_AUDIO_BYTES) {
+          return unavailable(`audio clip exceeds the ${ASR_MAX_AUDIO_BYTES} byte limit`)
+        }
+        const wav = whisperTempWavPath()
+        try {
+          await writeFile(wav, audio)
+          const raw = await transcribeWav(paths, wav, signal)
+          // whisper's Chinese tokenizer often answers in Traditional script;
+          // the composer inserts Simplified to match what the user types.
+          return ok(request, { text: toSimplified(raw) })
+        } catch (error: unknown) {
+          return unavailable(`transcription failed: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+          await rm(wav, { force: true }).catch(() => {})
         }
       },
     },

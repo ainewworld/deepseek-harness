@@ -31,6 +31,7 @@ import {
 } from '../image-labels.ts'
 import { ContextMeter } from './ContextMeter.tsx'
 import { PermissionSelect } from './PermissionSelect.tsx'
+import { startVoiceRecording, type VoiceRecording } from '../input/voice.ts'
 import css from './InputBar.module.css'
 
 /** Decoration product of the no-session state (no machine, empty draft). */
@@ -45,7 +46,7 @@ export type InputBarProps = ComposerBarProps
 
 export function InputBar({
   useSession, useInput, inputActions, keyboard, addImages, removeImage, draftImages,
-  resolveSubmitMode, toggleCommandMenu, stop, command, t,
+  resolveSubmitMode, toggleCommandMenu, stop, command, transcribe, t,
   renderSlot, useNotices, useLexicon, useMenuLauncher,
   useProjection, sessionId, variant, disabled: inert = false, blocked,
   workspacePickerOpen = false, onRequestWorkspace,
@@ -85,6 +86,56 @@ export function InputBar({
     setToast({ seq: toastSeq.current, text })
   }, [])
   const dismissToast = useCallback(() => { setToast(null) }, [])
+  // Voice input: one mic session at most. The ref outlives renders (the
+  // recording itself is imperative); the phase drives the button's affordance.
+  const [voicePhase, setVoicePhase] = useState<'idle' | 'recording' | 'busy'>('idle')
+  const voiceRef = useRef<VoiceRecording | null>(null)
+  /** Insert the transcript at the caret (the machine's single write path). */
+  const insertVoiceText = useCallback((text: string) => {
+    if (inputActions === undefined || keyboard === undefined) return
+    const draft = keyboard.snapshot.draft
+    const field = inputRef.current
+    const start = field?.selectionStart ?? draft.length
+    const end = field?.selectionEnd ?? start
+    inputActions.setDraft(`${draft.slice(0, start)}${text}${draft.slice(end)}`)
+    field?.focus()
+  }, [inputActions, keyboard])
+  const onMicClick = useCallback(() => {
+    const recording = voiceRef.current
+    if (recording !== null) {
+      voiceRef.current = null
+      setVoicePhase('busy')
+      void recording.stop().then(async (clip) => {
+        if (!clip.ok) {
+          setVoicePhase('idle')
+          showToast(clip.reason === 'empty' ? t('voice.empty') : t('voice.failed'))
+          return
+        }
+        const result = await transcribe?.({ mediaType: clip.mediaType, data: clip.data })
+        setVoicePhase('idle')
+        if (result === undefined) return
+        if (!result.ok) {
+          showToast(result.message === '' ? t('voice.failed') : result.message)
+          return
+        }
+        insertVoiceText(result.text)
+      })
+      return
+    }
+    if (voicePhase !== 'idle' || transcribe === undefined) return
+    void startVoiceRecording().then(
+      (started) => {
+        voiceRef.current = started
+        setVoicePhase('recording')
+      },
+      (error: unknown) => {
+        showToast(error instanceof Error && error.message === 'unsupported' ? t('voice.unsupported') : t('voice.denied'))
+      },
+    )
+  }, [insertVoiceText, showToast, t, transcribe, voicePhase])
+  // A mid-recording unmount must release the mic: no callback survives to
+  // call stop(), so teardown happens here and the phase dies with the node.
+  useEffect(() => () => { voiceRef.current?.abort() }, [])
   // The deployment's image-intake limits (absent while no attachment service
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection('imageLimits')
@@ -745,6 +796,30 @@ export function InputBar({
                 <IconPlusOutline16 size={14} />
               </button>
             </Tooltip>
+            {transcribe !== undefined && (
+              <Tooltip
+                label={voicePhase === 'recording' ? t('voice.stop') : voicePhase === 'busy' ? t('voice.busy') : t('voice.start')}
+                side="top"
+                delayMs={500}
+              >
+                <button
+                  type="button"
+                  className={css.add}
+                  data-voice={voicePhase}
+                  aria-label={voicePhase === 'recording' ? t('voice.stop') : t('voice.start')}
+                  disabled={locked || (voicePhase === 'busy')}
+                  onMouseDown={keepFocus}
+                  onClick={onMicClick}
+                >
+                  <svg viewBox="0 0 16 16" width={14} height={14} aria-hidden>
+                    <path
+                      d="M8 1a2.25 2.25 0 0 0-2.25 2.25v4a2.25 2.25 0 1 0 4.5 0v-4A2.25 2.25 0 0 0 8 1ZM3.75 7.25a.75.75 0 0 1 1.5 0 2.75 2.75 0 0 0 5.5 0 .75.75 0 0 1 1.5 0 4.25 4.25 0 0 1-3.5 4.184V13h1.75a.75.75 0 0 1 0 1.5h-5a.75.75 0 0 1 0-1.5H7.25v-1.566A4.25 4.25 0 0 1 3.75 7.25Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                </button>
+              </Tooltip>
+            )}
             <div className={css.modes}>
               {accessSelect}
               {renderSlot('conversation.input.plan', { locked })}

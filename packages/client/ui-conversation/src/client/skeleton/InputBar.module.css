@@ -346,6 +346,19 @@
   cursor: default;
 }
 
+/* Voice-input mic while recording: live red affordance with a soft pulse;
+   transcribing keeps the resting fill (busy cursor + disabled already say it). */
+.add[data-voice='recording'] {
+  background: var(--dsw-alias-state-danger-solid, #e5484d);
+  color: #fff;
+  animation: mic-recording 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes mic-recording {
+  from { opacity: 0.65; }
+  to { opacity: 1; }
+}
+
 /* Plan / Read-only / model — native <select>, chip-like closed chrome
    (figma ToggleButton: 13/20 medium secondary, 12px chevron). */
 .select {

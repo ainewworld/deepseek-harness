@@ -517,6 +517,16 @@ export interface ComposerBarInjected {
    */
   command: ((line: string) => Promise<boolean>) | undefined
   /**
+   * Voice input: transcribe one base64 WAV clip through the host's local
+   * asr domain. Absent without a session (the mic inserts into that
+   * session's draft). Errors resolve as `{ ok: false, message }`, never
+   * reject — the composer surfaces the message through its notice toast.
+   */
+  transcribe?: ((
+    payload: { mediaType: 'audio/wav'; data: string },
+    signal?: AbortSignal,
+  ) => Promise<{ ok: true; text: string } | { ok: false; message: string }>) | undefined
+  /**
    * Registrant hooks compartment: the renderer binds these to
    * useNotices/useLexicon (static absent sources without a session — hook
    * order stays constant).

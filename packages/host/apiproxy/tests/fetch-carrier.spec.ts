@@ -282,6 +282,11 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
         return { rpcId: request.rpcId, result: { ok: true, value: { models: [] } } }
       },
     },
+    asr: {
+      async transcribe(request) {
+        return { rpcId: request.rpcId, result: { ok: true, value: { text: '' } } }
+      },
+    },
     events: {
       mux: (_request, signal) => stream(muxFrames, signal),
       host: (_request, signal) => stream(hostFrames, signal),
