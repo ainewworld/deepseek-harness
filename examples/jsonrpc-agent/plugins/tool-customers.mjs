@@ -1,9 +1,12 @@
 /**
  * Business tool bridge: expose the host application's customer data to the
- * embedded DSH agent as two model-facing tools:
+ * embedded DSH agent as three model-facing tools:
  *  - `query_customers` — filtered read access to the customer list
  *  - `import_customers` — bulk JSON/YAML import through the same validation
  *    pipeline the portal's import feature uses (POST /api/customers/import).
+ *  - `import_business_card` — recognize a customer from a business-card
+ *    image via the backend's vision-LLM recognition endpoint
+ *    (POST /api/customers/import/card, autoCommit).
  * The plugin is loaded by the relative entry in app.cordis.yml (relative
  * plugin names resolve beside the configuration file), so it needs no build
  * step and no package installation — bare imports resolve through the
@@ -207,5 +210,92 @@ export function apply(ctx, config) {
       }
     },
     presentCall: args => ({ card: 'generic', title: 'Import customers', kind: 'import', rawInput: { format: args.format ?? 'auto', contentLength: String(args.content ?? '').length } }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'import_business_card',
+    description:
+      'Recognize a customer from a business-card image and import them into'
+      + ' the application. The backend sends the image to a vision LLM that'
+      + ' extracts name, company, and email; the recognized record is then'
+      + ' created through the standard validation path. Returns the recognized'
+      + ' fields and the created customer id — always report the recognized'
+      + ' fields to the user so they can spot recognition mistakes.'
+      + ' Supported image types: png, jpeg, webp (max 8 MB).',
+    parameters: {
+      imageBase64: {
+        type: 'string',
+        required: true,
+        description:
+          'The business-card image bytes, base64-encoded (no data: prefix). '
+          + 'When the user pastes a data URL, strip the "data:<mediatype>;base64," prefix first and pass the media type via imageMediaType.',
+      },
+      imageMediaType: {
+        type: 'string',
+        required: true,
+        enum: ['image/png', 'image/jpeg', 'image/webp'],
+        description: 'Image media type. Pass "image/png" when unsure — execute() falls back to it for unknown values.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          committed: { type: 'boolean', required: true },
+          id: { type: 'integer' },
+          name: { type: 'string', required: true },
+          company: { type: 'string', required: true },
+          email: { type: 'string', required: true },
+          status: { type: 'string', required: true },
+          warnings: { type: 'array', required: true, items: { type: 'string' } },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.committed
+          ? `Business card imported: ${value.name} (#${value.id}).`
+          : `Business card recognized (not committed): ${value.name}.`,
+      }],
+    },
+    timeoutMs: 60000, // vision LLM round trip can be slow
+    async execute(args) {
+      const imageBase64 = String(args.imageBase64 ?? '').replace(/^data:[^,]*,/, '')
+      if (imageBase64 === '') {
+        throw new Error('imageBase64 is empty — pass the base64-encoded card image')
+      }
+      let response
+      try {
+        response = await fetch(`${baseUrl}/api/customers/import/card`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(55000),
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            imageBase64,
+            imageMediaType: args.imageMediaType ?? 'image/png',
+            autoCommit: true, // agent channel: the user sees recognized fields in the conversation
+          }),
+        })
+      } catch (error) {
+        throw new Error(`business-card API unreachable at ${baseUrl}/api/customers/import/card: ${error?.message ?? String(error)}`)
+      }
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.ok) {
+        const message = payload?.message ?? `HTTP ${response.status} ${response.statusText}`
+        throw new Error(`business-card import rejected: ${message}`)
+      }
+      return {
+        ok: true,
+        committed: Boolean(payload.committed),
+        id: payload.customer?.id,
+        name: payload.customer?.name ?? '',
+        company: payload.customer?.company ?? '',
+        email: payload.customer?.email ?? '',
+        status: payload.customer?.status ?? 'pending',
+        warnings: Array.isArray(payload.warnings) ? payload.warnings.map(String) : [],
+      }
+    },
+    presentCall: args => ({ card: 'generic', title: 'Import business card', kind: 'import', rawInput: { imageMediaType: args.imageMediaType ?? 'image/png', imageBytesApprox: Math.round(String(args.imageBase64 ?? '').length * 3 / 4) } }),
   }))
 }
